@@ -31,9 +31,19 @@ fn next_tag(str: []const u8, index: *usize) ?[]const u8 {
         // try to find a space to delimit tag name
         const c = std.mem.indexOfScalarPos(u8, str, a, ' ') orelse b;
         index.* = b + 1;
+        
         // if the tag is immediately closed <tag>, the next space
         // will not be part of the tag name, hence the @min
-        return str[a + 1 .. @min(b, c)];
+        const result = str[a + 1 .. @min(b, c)];
+
+        // if we encounter a script tag, we skip it to avoid
+        // parsing javascript and hope that there is no
+        // </script> inside any strings in the js
+        if (std.mem.eql(u8, result, "script")) {
+            index.* = std.mem.indexOfPos(u8, str, index.*, "</script>") orelse return null;
+        }
+
+        return result;
     }
     return null;
 }
@@ -44,12 +54,6 @@ fn match(str: []const u8, tag: Tag) !void {
     _ = tag;
 
     while (next_tag(str, &index)) |t| {
-        // if we encounter a script tag, we skip it to avoid
-        // parsing javascript and hope that there is no
-        // </script> inside any strings in the js
-        if (std.mem.eql(u8, t, "script")) {
-            index = std.mem.indexOfPos(u8, str, index, "</script>") orelse return error.ScriptNotClosed;
-        }
         // print all tags for now
         std.debug.print("<{s}>\n", .{t});
     }
