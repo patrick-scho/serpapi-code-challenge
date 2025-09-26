@@ -53,7 +53,7 @@ const ParsedTag = struct {
     name: []const u8,
     attrs: ?[]const u8 = null,
     all: []const u8,
-    
+
     /// get a named attribute from the attribute section extracted from a tag
     fn get_attr(self: ParsedTag, attr: []const u8) ?[]const u8 {
         if (self.attrs == null) return null;
@@ -211,8 +211,6 @@ const Artwork = struct {
     }
 };
 
-// tests and main
-
 /// helper function to read a file
 fn read_file(alloc: std.mem.Allocator, filename: []const u8) ![]const u8 {
     // read file
@@ -221,6 +219,12 @@ fn read_file(alloc: std.mem.Allocator, filename: []const u8) ![]const u8 {
     return try f.readToEndAlloc(alloc, 1024 * 1024 * 1024);
 }
 
+// this solution doesn't parse the whole html into an AST
+// instead it simply tokenizes all tags heuristically
+// and extract the relevant information that way.
+// this was a conscious decision, since the problem seemed to be
+// highly localized to just a handful of tags that follow a similar
+// structure.
 pub fn main() !void {
     var allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer allocator.deinit();
@@ -228,10 +232,10 @@ pub fn main() !void {
 
     const s = try read_file(alloc, "files/van-gogh-paintings.html");
     defer alloc.free(s);
-    
+
     var artworks = try test_process_file(alloc, s);
     defer artworks.deinit(alloc);
-    
+
     try test_print_json(artworks.items);
 }
 
@@ -247,7 +251,7 @@ fn test_process_file(alloc: std.mem.Allocator, str: []const u8) !std.ArrayList(A
                 } },
             } },
         } };
-    
+
     // collect matches
     var artworks = try std.ArrayList(Artwork).initCapacity(alloc, 10);
 
@@ -262,8 +266,10 @@ fn test_process_file(alloc: std.mem.Allocator, str: []const u8) !std.ArrayList(A
 }
 
 fn test_print_json(artworks: []const Artwork) !void {
-    // get a handle to stdout
-    const out = std.fs.File.stdout();
+    // get a handle to stderr
+    // need to write to stderr bc `zig build test`
+    // prohibits using stdout
+    const out = std.fs.File.stderr();
     var writer = out.deprecatedWriter();
 
     // start printing json
@@ -283,10 +289,10 @@ test "van-gogh-json" {
 
     const s = try read_file(alloc, "files/van-gogh-paintings.html");
     defer alloc.free(s);
-    
+
     var artworks = try test_process_file(alloc, s);
     defer artworks.deinit(alloc);
-    
+
     try test_print_json(artworks.items);
 }
 
@@ -295,10 +301,10 @@ test "claude-monet-json" {
 
     const s = try read_file(alloc, "files/claude-monet-paintings.html");
     defer alloc.free(s);
-    
+
     var artworks = try test_process_file(alloc, s);
     defer artworks.deinit(alloc);
-    
+
     try test_print_json(artworks.items);
 }
 test "pablo-picasso-json" {
@@ -306,10 +312,10 @@ test "pablo-picasso-json" {
 
     const s = try read_file(alloc, "files/pablo-picasso-paintings.html");
     defer alloc.free(s);
-    
+
     var artworks = try test_process_file(alloc, s);
     defer artworks.deinit(alloc);
-    
+
     try test_print_json(artworks.items);
 }
 
@@ -318,10 +324,10 @@ test "van-gogh-entries" {
 
     const s = try read_file(alloc, "files/van-gogh-paintings.html");
     defer alloc.free(s);
-    
+
     var artworks = try test_process_file(alloc, s);
     defer artworks.deinit(alloc);
-    
+
     std.debug.assert(std.mem.eql(u8, artworks.items[0].name, "The Starry Night"));
     std.debug.assert(std.mem.eql(u8, artworks.items[1].name, "Van Gogh self-portrait"));
     std.debug.assert(std.mem.eql(u8, artworks.items[2].name, "The Potato Eaters"));
@@ -340,4 +346,3 @@ test "van-gogh-entries" {
     std.debug.assert(std.mem.eql(u8, artworks.items[6].extensions[0], "1888"));
     std.debug.assert(std.mem.eql(u8, artworks.items[7].extensions[0], "1889"));
 }
-

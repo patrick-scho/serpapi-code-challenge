@@ -25,13 +25,11 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_exe.step);
 
     // test step
-    const test_step = b.step("test", "Run unit tests");
-    const unit_test = b.addTest(.{
-        .root_module = exe_options.root_module,
+    const exe_test = b.addTest(.{
+        .root_module = exe.root_module,
     });
-    unit_test.use_llvm = true;
-    b.installArtifact(unit_test);
-    const run_unit_test = b.addRunArtifact(unit_test);
+    const run_unit_test = b.addRunArtifact(exe_test);
+    const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_test.step);
 
     // check step for LSP
