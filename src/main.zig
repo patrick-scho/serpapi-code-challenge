@@ -53,17 +53,33 @@ const ParsedTag = struct {
     name: []const u8,
     attrs: ?[]const u8 = null,
     all: []const u8,
+    
+    /// get a named attribute from the attribute section extracted from a tag
+    fn get_attr(self: ParsedTag, attr: []const u8) ?[]const u8 {
+        if (self.attrs == null) return null;
+        const attr_start = std.mem.indexOf(u8, self.attrs.?, attr) orelse return null;
+        return next_str(self.attrs.?[attr_start..self.attrs.?.len]);
+    }
+};
+
+/// struct that contains a tag pair and content
+const ParsedTagPair = struct {
+    tag: ParsedTag,
+    content: []const u8,
 };
 
 /// find the next tag enclosed in <>
 fn next_tag(str: []const u8, index: *usize) ?ParsedTag {
     while (index.* < str.len) {
+        // find start and end <>
         const start = next_not_in_str(str, index.*, '<') orelse return null;
         const end = next_not_in_str(str, start + 1, '>') orelse return null;
+        // check if there is a space inside the tag (there are attributes)
         var has_space = std.mem.indexOfScalarPos(u8, str, start, ' ');
         if (has_space != null and has_space.? >= end) has_space = null;
         index.* = end + 1;
 
+        // create result depending on if there is a space or not
         const result =
             if (has_space) |space|
                 ParsedTag{ .name = str[start + 1 .. space], .attrs = str[space + 1 .. end], .all = str[start + 1 .. end] }
@@ -82,6 +98,18 @@ fn next_tag(str: []const u8, index: *usize) ?ParsedTag {
     return null;
 }
 
+/// get tag pair <tag></tag> including the inner content
+fn next_tag_pair(str: []const u8, index: *usize) ?ParsedTagPair {
+    const tag = next_tag(str, index) orelse return null;
+    const content_start = index.*;
+    const content_end = std.mem.indexOfScalarPos(u8, str, content_start, '<') orelse return null;
+    _ = next_tag(str, index);
+    return .{
+        .tag = tag,
+        .content = str[content_start..content_end],
+    };
+}
+
 /// match a tag name, checking for a starting /
 fn match_tag_name(tag: []const u8, name: []const u8) bool {
     const start: usize = if (tag[0] == '/') 1 else 0;
@@ -89,7 +117,7 @@ fn match_tag_name(tag: []const u8, name: []const u8) bool {
 }
 
 /// try matching exactly one tag
-fn try_match(str: []const u8, index: *usize, tag: Tag) ?[]const u8 {
+fn match_one(str: []const u8, index: *usize, tag: Tag) ?[]const u8 {
     const t = next_tag(str, index) orelse return null;
 
     // calculate offset of the found tag from str
@@ -104,7 +132,7 @@ fn try_match(str: []const u8, index: *usize, tag: Tag) ?[]const u8 {
 
         // otherwise check children recursively
         for (tag.children) |child| {
-            _ = try_match(str, index, child) orelse return null;
+            _ = match_one(str, index, child) orelse return null;
         }
 
         // and check end tag
@@ -129,45 +157,11 @@ fn match(str: []const u8, index: *usize, tag: Tag) ?[]const u8 {
         // since we only want to move the index we can discard the result
         _ = next_tag(str, index) orelse return null;
         // try matching out pattern starting from this tag
-        if (try_match(str, &try_index, tag)) |result| {
+        if (match_one(str, &try_index, tag)) |result| {
             return result;
         }
     }
     return null;
-}
-
-// TODO: improve
-fn get_content(start: []const u8, end: []const u8, str: []const u8) []const u8 {
-    const from = @intFromPtr(start.ptr) - @intFromPtr(str.ptr) + start.len;
-    const len = @intFromPtr(end.ptr) - @intFromPtr(start.ptr) - start.len;
-
-    return str[from + 1 .. from + len - 1];
-}
-
-/// get a named attribute from the attribute section extracted from a tag
-fn get_attr(str: ?[]const u8, attr: []const u8) ?[]const u8 {
-    if (str == null) return null;
-    const attr_start = std.mem.indexOf(u8, str.?, attr) orelse return null;
-    return next_str(str.?[attr_start..str.?.len]);
-}
-
-/// print a result as a json object
-fn print_json(writer: anytype, hit: []const u8) !void {
-    const artwork = Artwork.parse(hit);
-    try writer.print("    {{\n", .{});
-    try writer.print("      \"name\": \"{s}\",\n", .{ artwork.name });
-    try writer.print("      \"extensions\": [ \"{s}\" ],\n", .{ artwork.extensions[0] });
-    try writer.print("      \"link\": \"https://www.google.com{s}\",\n", .{ artwork.link });
-    try writer.print("      \"image\": \"{s}\",\n", .{ artwork.image });
-    try writer.print("    }},\n", .{});
-}
-
-/// helper function to read a file
-fn read_file(alloc: std.mem.Allocator, filename: []const u8) ![]const u8 {
-    // read file
-    const f = try std.fs.cwd().openFile(filename, .{});
-    defer f.close();
-    return try f.readToEndAlloc(alloc, 1024 * 1024 * 1024);
 }
 
 /// simple Tag struct to represent the structure we are looking for
@@ -177,44 +171,71 @@ const Tag = struct {
     end_tag: bool = true,
 };
 
+/// target Artwork structure
 const Artwork = struct {
     name: []const u8,
     extensions: [1][]const u8,
     link: []const u8,
     image: []const u8,
 
+    /// print a result as a json object
+    fn print_json(self: Artwork, writer: anytype) !void {
+        try writer.print("    {{\n", .{});
+        try writer.print("      \"name\": \"{s}\",\n", .{self.name});
+        try writer.print("      \"extensions\": [ \"{s}\" ],\n", .{self.extensions[0]});
+        try writer.print("      \"link\": \"https://www.google.com{s}\",\n", .{self.link});
+        try writer.print("      \"image\": \"{s}\",\n", .{self.image});
+        try writer.print("    }},\n", .{});
+    }
+
     /// parse relevant info from string containing
     /// the previously searched pattern
     fn parse(str: []const u8) Artwork {
         var index: usize = 0;
-        _ = next_tag(str, &index).?;
+
+        // we know the tags are there so we can
+        // immediately unwrap with .?
+        _ = next_tag(str, &index); // skip unneeded div
         const a = next_tag(str, &index).?;
         const img = next_tag(str, &index).?;
-        _ = next_tag(str, &index).?;
-        const div3_start = next_tag(str, &index).?;
-        const div3_end = next_tag(str, &index).?;
-        const div4_start = next_tag(str, &index).?;
-        const div4_end = next_tag(str, &index).?;
+        _ = next_tag(str, &index); // skip again
+        const div1 = next_tag_pair(str, &index).?;
+        const div2 = next_tag_pair(str, &index).?;
+
         return .{
-            .name = get_content(div3_start.all, div3_end.all, str),
-            .extensions = [1][]const u8{get_content(div4_start.all, div4_end.all, str)},
-            .link = get_attr(a.attrs, "href") orelse "",
-            .image = get_attr(img.attrs, "src") orelse "",
+            .name = div1.content,
+            .extensions = .{div2.content},
+            .link = a.get_attr("href") orelse "",
+            .image = img.get_attr("src") orelse "",
         };
     }
 };
 
+// tests and main
+
+/// helper function to read a file
+fn read_file(alloc: std.mem.Allocator, filename: []const u8) ![]const u8 {
+    // read file
+    const f = try std.fs.cwd().openFile(filename, .{});
+    defer f.close();
+    return try f.readToEndAlloc(alloc, 1024 * 1024 * 1024);
+}
+
 pub fn main() !void {
-    // create allocator for reading file
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    var allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer allocator.deinit();
+    const alloc = allocator.allocator();
 
-    // read the file
-    // const s = try read_file(alloc, "files/van-gogh-paintings.html");
-    // const s = try read_file(alloc, "files/claude-monet-paintings.html");
-    const s = try read_file(alloc, "files/pablo-picasso-paintings.html");
+    const s = try read_file(alloc, "files/van-gogh-paintings.html");
+    defer alloc.free(s);
+    
+    var artworks = try test_process_file(alloc, s);
+    defer artworks.deinit(alloc);
+    
+    try test_print_json(artworks.items);
+}
 
+fn test_process_file(alloc: std.mem.Allocator, str: []const u8) !std.ArrayList(Artwork) {
     // specify the tag structure we are looking for
     const t: Tag =
         .{ .name = "div", .children = &.{
@@ -226,14 +247,97 @@ pub fn main() !void {
                 } },
             } },
         } };
+    
+    // collect matches
+    var artworks = try std.ArrayList(Artwork).initCapacity(alloc, 10);
 
+    var index: usize = 0;
+    while (match(str, &index, t)) |hit| {
+        // parse Artwork from string
+        const artwork = Artwork.parse(hit);
+        try artworks.append(alloc, artwork);
+    }
+
+    return artworks;
+}
+
+fn test_print_json(artworks: []const Artwork) !void {
+    // get a handle to stdout
     const out = std.fs.File.stdout();
     var writer = out.deprecatedWriter();
+
+    // start printing json
     try writer.print("{{\n  \"artworks\": [\n", .{});
-    // collect matches
-    var index: usize = 0;
-    while (match(s, &index, t)) |hit| {
-        try print_json(writer, hit);
+
+    // output json objects
+    for (artworks) |artwork| {
+        try artwork.print_json(writer);
     }
+
+    // finish json
     try writer.print("  ]\n}}\n", .{});
 }
+
+test "van-gogh-json" {
+    const alloc = std.testing.allocator;
+
+    const s = try read_file(alloc, "files/van-gogh-paintings.html");
+    defer alloc.free(s);
+    
+    var artworks = try test_process_file(alloc, s);
+    defer artworks.deinit(alloc);
+    
+    try test_print_json(artworks.items);
+}
+
+test "claude-monet-json" {
+    const alloc = std.testing.allocator;
+
+    const s = try read_file(alloc, "files/claude-monet-paintings.html");
+    defer alloc.free(s);
+    
+    var artworks = try test_process_file(alloc, s);
+    defer artworks.deinit(alloc);
+    
+    try test_print_json(artworks.items);
+}
+test "pablo-picasso-json" {
+    const alloc = std.testing.allocator;
+
+    const s = try read_file(alloc, "files/pablo-picasso-paintings.html");
+    defer alloc.free(s);
+    
+    var artworks = try test_process_file(alloc, s);
+    defer artworks.deinit(alloc);
+    
+    try test_print_json(artworks.items);
+}
+
+test "van-gogh-entries" {
+    const alloc = std.testing.allocator;
+
+    const s = try read_file(alloc, "files/van-gogh-paintings.html");
+    defer alloc.free(s);
+    
+    var artworks = try test_process_file(alloc, s);
+    defer artworks.deinit(alloc);
+    
+    std.debug.assert(std.mem.eql(u8, artworks.items[0].name, "The Starry Night"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[1].name, "Van Gogh self-portrait"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[2].name, "The Potato Eaters"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[3].name, "Wheatfield with Crows"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[4].name, "Café Terrace at Night"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[5].name, "Almond Blossoms"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[6].name, "Vase with Fifteen Sunflowers"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[7].name, "Self-Portrait"));
+
+    std.debug.assert(std.mem.eql(u8, artworks.items[0].extensions[0], "1889"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[1].extensions[0], "1889"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[2].extensions[0], "1885"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[3].extensions[0], "1890"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[4].extensions[0], "1888"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[5].extensions[0], "1890"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[6].extensions[0], "1888"));
+    std.debug.assert(std.mem.eql(u8, artworks.items[7].extensions[0], "1889"));
+}
+
